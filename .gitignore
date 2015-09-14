@@ -1,0 +1,10 @@
+#
+# Ignore these
+#
+target
+derby.log
+apidocs
+
+*~
+\#*
+.\#*
