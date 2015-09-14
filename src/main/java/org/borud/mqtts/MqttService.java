@@ -75,12 +75,13 @@ public final class MqttService extends ChannelInboundHandlerAdapter {
     // Netty server related stuff
     //
     private int port;
-    private EventLoopGroup bossGroup = new NioEventLoopGroup();
-    private EventLoopGroup workerGroup = new NioEventLoopGroup();
     private ChannelFuture channelFuture;
+    private final EventLoopGroup bossGroup = new NioEventLoopGroup();
+    private final EventLoopGroup workerGroup = new NioEventLoopGroup();
+
 
     // Map from network connection to the context object used in this service.
-    private Map<ChannelHandlerContext, Context> contextMap = new HashMap<>();
+    private final Map<ChannelHandlerContext, Context> contextMap = new HashMap<>();
 
     // Interface definitions for handlers
     //
