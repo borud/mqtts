@@ -57,69 +57,143 @@ import java.util.logging.Level;
  * @author borud
  */
 @Sharable
-public final class MqttService extends ChannelInboundHandlerAdapter {
+public final class MqttService // extends ChannelInboundHandlerAdapter {
+{
     private static final Logger log = Logger.getLogger(MqttService.class.getName());
 
     public static final int SOCKOPT_BACKLOG_DEFAULT = 50;
     public static final int MAXIMUM_MESSAGE_SIZE_DEFAULT = 1024 * 1024;
 
-    // The command handlers
-    //
-    private final ConnectHandler connectHandler;
-    private final DisconnectHandler disconnectHandler;
-    private final PublishHandler publishHandler;
-    private final SubscribeHandler subscribeHandler;
-    private final UnsubscribeHandler unsubscribeHandler;
-    private final PingHandler pingHandler;
-
-    // Netty server related stuff
-    //
-    private int port;
-    private ChannelFuture channelFuture;
-    private final EventLoopGroup bossGroup = new NioEventLoopGroup();
-    private final EventLoopGroup workerGroup = new NioEventLoopGroup();
-
-
-    // Map from network connection to the context object used in this service.
-    private final Map<ChannelHandlerContext, Context> contextMap = new HashMap<>();
-
-    // Interface definitions for handlers
-    //
-    public interface ConnectHandler {
-        public MqttMessage handle(Context context, MqttConnectMessage msg);
+    // We use this class to identify special return messages from the handle()
+    // methods in the above handler types.  This is creative abuse of the type
+    // system.
+    public static class MqttSentinelMessage extends MqttMessage {
+        // Package visibility
+        MqttSentinelMessage() {
+            super(null);
+        }
     }
 
-    public interface DisconnectHandler {
-        public MqttMessage handle(Context context, MqttMessage msg);
+    public static final MqttSentinelMessage DROP_CONNECTION = new MqttSentinelMessage();
+
+    /**
+     * MqttHandler as an inner class to reduce the amount of API leakage from
+     * the Netty classes.
+     */
+    private class MqttHandler extends ChannelInboundHandlerAdapter {
+        @Override
+        public void channelRead(ChannelHandlerContext ctx, Object message) {
+            checkNotNull(ctx);
+            checkNotNull(message);
+
+            // Look up the context for this connection.  If one does not exist this
+            // means that this is a new connection and we should allocate a context
+            // object.
+            Context context = null;
+            synchronized (contextMap) {
+                context = contextMap.get(ctx);
+                if (context == null) {
+                    context = new Context(ctx);
+                    contextMap.put(ctx, context);
+                }
+            }
+
+            MqttMessage msg = (MqttMessage) message;
+
+            // If we get an oversize message the fixed header (and the other fields)
+            // will be null.  So we just drop the connection.  We let the protocol
+            // handler do this so that we can properly handle any session-related
+            // cleanup.
+            if (msg.fixedHeader() == null) {
+                log.warning("Oversize message");
+                disconnect(ctx);
+                return;
+            }
+
+            MqttMessage response = null;
+            MqttMessageType type = msg.fixedHeader().messageType();
+
+            switch(type) {
+                case CONNECT:
+                    response = connectHandler.handle(context, (MqttConnectMessage) msg);
+                    break;
+
+                case DISCONNECT:
+                    response = disconnectHandler.handle(context, msg);
+                    break;
+
+                case PUBLISH:
+                    response = publishHandler.handle(context, (MqttPublishMessage) msg);
+                    break;
+
+                case SUBSCRIBE:
+                    response = subscribeHandler.handle(context, (MqttSubscribeMessage) msg);
+                    break;
+
+                case UNSUBSCRIBE:
+                    response = unsubscribeHandler.handle(context, (MqttUnsubscribeMessage) msg);
+                    break;
+
+                case PINGREQ:
+                    response = pingHandler.handle(context, msg);
+                    break;
+
+                default:
+                    log.log(Level.WARNING, "Unknown message type: " + type);
+            }
+
+            // If the return value is a subtype of the sentinel type we have to
+            // investigate further.
+            if (response instanceof MqttSentinelMessage) {
+
+                if (response == DROP_CONNECTION) {
+                    disconnect(ctx);
+                    return;
+                }
+
+                throw new RuntimeException("Unknown sentinel message type");
+            }
+
+            if (response != null) {
+                ctx.writeAndFlush(response).addListener(new ChannelFutureListener() {
+                        @Override
+                        public void operationComplete(ChannelFuture future) {
+                            log.info("Response sent.");
+                        }
+                    });
+                return;
+            }
+        }
+
+        private void disconnect(ChannelHandlerContext ctx) {
+            // We will not be needing this anymore.
+            synchronized (contextMap) {
+                contextMap.remove(ctx);
+            }
+
+            ctx.close().addListener(new ChannelFutureListener() {
+                    @Override
+                    public void operationComplete(ChannelFuture future) {
+                        log.info("Disconnect complete [future]");
+                    }
+                });
+        }
     }
 
-    public interface PublishHandler {
-        public MqttMessage handle(Context context, MqttPublishMessage msg);
-    }
-
-    public interface SubscribeHandler {
-        public MqttMessage handle(Context context, MqttSubscribeMessage msg);
-    }
-
-    public interface UnsubscribeHandler {
-        public MqttMessage handle(Context context, MqttUnsubscribeMessage msg);
-    }
-
-    public interface PingHandler {
-        public MqttMessage handle(Context context, MqttMessage msg);
-    }
 
     /**
      * Builder class for MqttService.  Instances of this builder are reusable.
      */
     public static final class Builder {
+        private static final Logger log = Logger.getLogger(Builder.class.getName());
+
         private int port = 0;
-        private ConnectHandler connectHandler;
-        private DisconnectHandler disconnectHandler;
-        private PublishHandler publishHandler;
-        private SubscribeHandler subscribeHandler;
-        private UnsubscribeHandler unsubscribeHandler;
-        private PingHandler pingHandler;
+        private ConnectHandler connectHandler         = (ctx, msg) -> {log.info("no handler defined"); return null;};
+        private DisconnectHandler disconnectHandler   = (ctx, msg) -> {log.info("no handler defined"); return null;};
+        private PublishHandler publishHandler         = (ctx, msg) -> {log.info("no handler defined"); return null;};
+        private SubscribeHandler subscribeHandler     = (ctx, msg) -> {log.info("no handler defined"); return null;};
+        private UnsubscribeHandler unsubscribeHandler = (ctx, msg) -> {log.info("no handler defined"); return null;};
+        private PingHandler pingHandler               = (ctx, msg) -> {log.info("no handler defined"); return null;};
 
         public Builder port(final int port) {
             this.port = port;
@@ -167,6 +241,53 @@ public final class MqttService extends ChannelInboundHandlerAdapter {
         }
     }
 
+
+    // Interface definitions for handlers
+    //
+    public interface ConnectHandler {
+        public MqttMessage handle(Context context, MqttConnectMessage msg);
+    }
+
+    public interface DisconnectHandler {
+        public MqttMessage handle(Context context, MqttMessage msg);
+    }
+
+    public interface PublishHandler {
+        public MqttMessage handle(Context context, MqttPublishMessage msg);
+    }
+
+    public interface SubscribeHandler {
+        public MqttMessage handle(Context context, MqttSubscribeMessage msg);
+    }
+
+    public interface UnsubscribeHandler {
+        public MqttMessage handle(Context context, MqttUnsubscribeMessage msg);
+    }
+
+    public interface PingHandler {
+        public MqttMessage handle(Context context, MqttMessage msg);
+    }
+
+    // The command handlers
+    //
+    private final ConnectHandler connectHandler;
+    private final DisconnectHandler disconnectHandler;
+    private final PublishHandler publishHandler;
+    private final SubscribeHandler subscribeHandler;
+    private final UnsubscribeHandler unsubscribeHandler;
+    private final PingHandler pingHandler;
+
+    // Server related stuff
+    //
+    private int port = 0;
+    private Boolean started = false;
+    private ChannelFuture channelFuture;
+    private final EventLoopGroup bossGroup = new NioEventLoopGroup();
+    private final EventLoopGroup workerGroup = new NioEventLoopGroup();
+
+    // Map from network connection to the context object used in this service.
+    private final Map<ChannelHandlerContext, Context> contextMap = new HashMap<>();
+
     public MqttService(final int port,
                        final ConnectHandler connectHandler,
                        final DisconnectHandler disconnectHandler,
@@ -187,91 +308,12 @@ public final class MqttService extends ChannelInboundHandlerAdapter {
         return new Builder();
     }
 
-    @Override
-    public void channelRead(ChannelHandlerContext ctx, Object message) {
-        checkNotNull(ctx);
-        checkNotNull(message);
-
-        // Look up the context for this connection.  If one does not exist this
-        // means that this is a new connection and we should allocate a context
-        // object.
-        Context context = null;
-        synchronized (contextMap) {
-            context = contextMap.get(ctx);
-            if (context == null) {
-                context = new Context(ctx);
-                contextMap.put(ctx, context);
-            }
+    public MqttService start() throws Exception {
+        synchronized(started) {
+            checkState(!started);
+            started = true;
         }
 
-        MqttMessage msg = (MqttMessage) message;
-
-        // If we get an oversize message the fixed header (and the other fields)
-        // will be null.  So we just drop the connection.  We let the protocol
-        // handler do this so that we can properly handle any session-related
-        // cleanup.
-        if (msg.fixedHeader() == null) {
-            log.warning("Oversize message");
-
-            // We will not be needing this anymore.
-            synchronized (contextMap) {
-                contextMap.remove(ctx);
-            }
-
-            ctx.close().addListener(new ChannelFutureListener() {
-                    @Override
-                    public void operationComplete(ChannelFuture future) {
-                        log.info("Disconnect complete [future]");
-                    }
-                });
-
-            return;
-        }
-
-        MqttMessage response = null;
-        MqttMessageType type = msg.fixedHeader().messageType();
-
-        switch(type) {
-            case CONNECT:
-                response = connectHandler.handle(context, (MqttConnectMessage) msg);
-                break;
-
-            case DISCONNECT:
-                response = disconnectHandler.handle(context, msg);
-                break;
-
-            case PUBLISH:
-                response = publishHandler.handle(context, (MqttPublishMessage) msg);
-                break;
-
-            case SUBSCRIBE:
-                response = subscribeHandler.handle(context, (MqttSubscribeMessage) msg);
-                break;
-
-            case UNSUBSCRIBE:
-                response = unsubscribeHandler.handle(context, (MqttUnsubscribeMessage) msg);
-                break;
-
-            case PINGREQ:
-                response = pingHandler.handle(context, msg);
-                break;
-
-            default:
-                log.log(Level.WARNING, "Unknown message type: " + type);
-        }
-
-
-        if (response != null) {
-            ctx.writeAndFlush(response).addListener(new ChannelFutureListener() {
-                    @Override
-                    public void operationComplete(ChannelFuture future) {
-                        log.info("Response sent.");
-                    }
-                });
-        }
-    }
-
-    public void start() throws Exception {
         channelFuture = new ServerBootstrap()
             .group(bossGroup, workerGroup)
             .channel(NioServerSocketChannel.class)
@@ -286,10 +328,30 @@ public final class MqttService extends ChannelInboundHandlerAdapter {
                         ch.pipeline()
                         .addLast(new MqttDecoder(MAXIMUM_MESSAGE_SIZE_DEFAULT))
                         .addLast(new MqttEncoder())
-                        .addLast(this);
+                        .addLast(new MqttHandler());
                     }
                 })
             .bind().sync();
+
+        log.info("Started MQTT Service, listening on port " + port);
+
+        return this;
     }
 
+    public void shutdown() throws Exception {
+        synchronized(started) {
+            checkState(started);
+        }
+
+        // Shut down executors with no quiet period and zero timeout.
+        // Make sure you shut down EventLoopGroup before closing the
+        // channel or the thing will hang, hang, hang.
+        bossGroup.shutdownGracefully(0,0,TimeUnit.SECONDS).sync();
+        workerGroup.shutdownGracefully(0,0,TimeUnit.SECONDS).sync();
+        channelFuture.channel().closeFuture().sync();
+
+        bossGroup.terminationFuture().sync();
+        workerGroup.terminationFuture().sync();
+        log.log(Level.INFO, "Terminated MQTT Server at port " + port);
+    }
 }
