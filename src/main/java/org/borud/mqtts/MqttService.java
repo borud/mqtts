@@ -42,8 +42,12 @@ import static io.netty.handler.codec.mqtt.MqttMessageType.UNSUBACK;
 import static io.netty.handler.codec.mqtt.MqttMessageType.UNSUBSCRIBE;
 
 import io.netty.util.AttributeKey;
-import java.util.concurrent.TimeUnit;
+
 import static com.google.common.base.Preconditions.*;
+
+import java.util.concurrent.TimeUnit;
+
+import java.net.InetSocketAddress;
 
 import java.util.Map;
 import java.util.HashMap;
@@ -185,9 +189,12 @@ public final class MqttService // extends ChannelInboundHandlerAdapter {
      * Builder class for MqttService.  Instances of this builder are reusable.
      */
     public static final class Builder {
+        public static final int DEFAULT_MQTT_PORT     = 1883;
+        public static final int DEFAULT_MQTT_SSL_PORT = 8883;
+
         private static final Logger log = Logger.getLogger(Builder.class.getName());
 
-        private int port = 0;
+        private int port = DEFAULT_MQTT_PORT;
         private ConnectHandler connectHandler         = (ctx, msg) -> {log.info("no handler defined"); return null;};
         private DisconnectHandler disconnectHandler   = (ctx, msg) -> {log.info("no handler defined"); return null;};
         private PublishHandler publishHandler         = (ctx, msg) -> {log.info("no handler defined"); return null;};
@@ -332,6 +339,10 @@ public final class MqttService // extends ChannelInboundHandlerAdapter {
                     }
                 })
             .bind().sync();
+
+        // If the port we specified was 0 then the network code will allocate an
+        // unused port.  Hence we have to look up the port anew.
+        port = ((InetSocketAddress)channelFuture.channel().localAddress()).getPort();
 
         log.info("Started MQTT Service, listening on port " + port);
 

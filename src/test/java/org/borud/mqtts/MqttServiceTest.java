@@ -12,7 +12,7 @@ public class MqttServiceTest {
     @Test
     public void testBuilder() throws Exception {
         MqttService.newBuilder()
-            .port(1234)
+            .port(0)
             .connect((context, message) -> {return null;})
             .disconnect((context, message) -> {return null;})
             .publish((context, message) -> {return null;})
