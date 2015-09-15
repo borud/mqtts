@@ -10,8 +10,8 @@ import static org.junit.Assert.*;
  */
 public class MqttServiceTest {
     @Test
-    public void testBuilder() {
-        MqttService service = MqttService.newBuilder()
+    public void testBuilder() throws Exception {
+        MqttService.newBuilder()
             .port(1234)
             .connect((context, message) -> {return null;})
             .disconnect((context, message) -> {return null;})
@@ -19,7 +19,9 @@ public class MqttServiceTest {
             .subscribe((context, message) -> {return null;})
             .unsubscribe((context, message) -> {return null;})
             .ping((context, message) -> {return null;})
-            .build();
+            .build()
+            .start()
+            .shutdown();
     }
 }
 
