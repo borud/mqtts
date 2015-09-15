@@ -68,9 +68,11 @@ public final class MqttService // extends ChannelInboundHandlerAdapter {
     public static final int SOCKOPT_BACKLOG_DEFAULT = 50;
     public static final int MAXIMUM_MESSAGE_SIZE_DEFAULT = 1024 * 1024;
 
-    // We use this class to identify special return messages from the handle()
-    // methods in the above handler types.  This is creative abuse of the type
-    // system.
+    /**
+     * We use this class to identify special return messages from the handle()
+     * methods in the above handler types.  This is creative abuse of the type
+     * system.
+     */
     public static class MqttSentinelMessage extends MqttMessage {
         // Package visibility
         MqttSentinelMessage() {
