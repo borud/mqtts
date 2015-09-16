@@ -4,6 +4,7 @@
 target
 derby.log
 apidocs
+dependency-reduced-pom.xml
 
 *~
 \#*
