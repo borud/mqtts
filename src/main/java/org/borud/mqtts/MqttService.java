@@ -67,6 +67,8 @@ public final class MqttService // extends ChannelInboundHandlerAdapter {
 
     public static final int SOCKOPT_BACKLOG_DEFAULT = 50;
     public static final int MAXIMUM_MESSAGE_SIZE_DEFAULT = 1024 * 1024;
+    public static final int DEFAULT_MQTT_PORT     = 1883;
+    public static final int DEFAULT_MQTT_SSL_PORT = 8883;
 
     /**
      * We use this class to identify special return messages from the handle()
@@ -161,13 +163,7 @@ public final class MqttService // extends ChannelInboundHandlerAdapter {
             }
 
             if (response != null) {
-                ctx.writeAndFlush(response).addListener(new ChannelFutureListener() {
-                        @Override
-                        public void operationComplete(ChannelFuture future) {
-                            log.info("Response sent.");
-                        }
-                    });
-                return;
+                ctx.writeAndFlush(response);
             }
         }
 
@@ -191,21 +187,38 @@ public final class MqttService // extends ChannelInboundHandlerAdapter {
      * Builder class for MqttService.  Instances of this builder are reusable.
      */
     public static final class Builder {
-        public static final int DEFAULT_MQTT_PORT     = 1883;
-        public static final int DEFAULT_MQTT_SSL_PORT = 8883;
 
         private static final Logger log = Logger.getLogger(Builder.class.getName());
 
         private int port = DEFAULT_MQTT_PORT;
-        private ConnectHandler connectHandler         = (ctx, msg) -> {log.info("no handler defined"); return null;};
-        private DisconnectHandler disconnectHandler   = (ctx, msg) -> {log.info("no handler defined"); return null;};
-        private PublishHandler publishHandler         = (ctx, msg) -> {log.info("no handler defined"); return null;};
-        private SubscribeHandler subscribeHandler     = (ctx, msg) -> {log.info("no handler defined"); return null;};
-        private UnsubscribeHandler unsubscribeHandler = (ctx, msg) -> {log.info("no handler defined"); return null;};
-        private PingHandler pingHandler               = (ctx, msg) -> {log.info("no handler defined"); return null;};
+        private int sslPort = DEFAULT_MQTT_SSL_PORT;
+        private int maxMessageSize = MAXIMUM_MESSAGE_SIZE_DEFAULT;
+        private int sockOptBacklog = SOCKOPT_BACKLOG_DEFAULT;
+
+        private ConnectHandler connectHandler         = (ctx, msg) -> {log.info("no connect handler defined"); return null;};
+        private DisconnectHandler disconnectHandler   = (ctx, msg) -> {log.info("no disconnect handler defined"); return null;};
+        private PublishHandler publishHandler         = (ctx, msg) -> {log.info("no publish handler defined"); return null;};
+        private SubscribeHandler subscribeHandler     = (ctx, msg) -> {log.info("no subscribe handler defined"); return null;};
+        private UnsubscribeHandler unsubscribeHandler = (ctx, msg) -> {log.info("no unsubscribe handler defined"); return null;};
+        private PingHandler pingHandler               = (ctx, msg) -> {log.info("no ping handler defined"); return null;};
 
         public Builder port(final int port) {
             this.port = port;
+            return this;
+        }
+
+        public Builder sslPort(final int sslPort) {
+            this.sslPort = sslPort;
+            return this;
+        }
+
+        public Builder maxMessageSize(int maxMessageSize) {
+            this.maxMessageSize = maxMessageSize;
+            return this;
+        }
+
+        public Builder sockOptBacklog(int sockOptBacklog) {
+            this.sockOptBacklog = sockOptBacklog;
             return this;
         }
 
@@ -241,6 +254,9 @@ public final class MqttService // extends ChannelInboundHandlerAdapter {
 
         public MqttService build() {
             return new MqttService(port,
+                                   sslPort,
+                                   maxMessageSize,
+                                   sockOptBacklog,
                                    connectHandler,
                                    disconnectHandler,
                                    publishHandler,
@@ -289,6 +305,10 @@ public final class MqttService // extends ChannelInboundHandlerAdapter {
     // Server related stuff
     //
     private int port = 0;
+    private int sslPort;
+    private final int maxMessageSize;
+    private final int sockOptBacklog;
+
     private Boolean started = false;
     private ChannelFuture channelFuture;
     private final EventLoopGroup bossGroup = new NioEventLoopGroup();
@@ -298,6 +318,9 @@ public final class MqttService // extends ChannelInboundHandlerAdapter {
     private final Map<ChannelHandlerContext, Context> contextMap = new HashMap<>();
 
     public MqttService(final int port,
+                       final int sslPort,
+                       final int maxMessageSize,
+                       final int sockOptBacklog,
                        final ConnectHandler connectHandler,
                        final DisconnectHandler disconnectHandler,
                        final PublishHandler publishHandler,
@@ -305,6 +328,9 @@ public final class MqttService // extends ChannelInboundHandlerAdapter {
                        final UnsubscribeHandler unsubscribeHandler,
                        final PingHandler pingHandler) {
         this.port = port;
+        this.sslPort = sslPort;
+        this.maxMessageSize = maxMessageSize;
+        this.sockOptBacklog = sockOptBacklog;
         this.connectHandler =  checkNotNull(connectHandler);
         this.disconnectHandler =  checkNotNull(disconnectHandler);
         this.publishHandler =  checkNotNull(publishHandler);
@@ -327,7 +353,7 @@ public final class MqttService // extends ChannelInboundHandlerAdapter {
             .group(bossGroup, workerGroup)
             .channel(NioServerSocketChannel.class)
             .localAddress(port)
-            .option(ChannelOption.SO_BACKLOG, SOCKOPT_BACKLOG_DEFAULT)
+            .option(ChannelOption.SO_BACKLOG, sockOptBacklog)
             .option(ChannelOption.SO_REUSEADDR, true)
             .childOption(ChannelOption.TCP_NODELAY, true)
             .childOption(ChannelOption.SO_KEEPALIVE, true)
@@ -335,7 +361,7 @@ public final class MqttService // extends ChannelInboundHandlerAdapter {
                     @Override
                     public void initChannel(SocketChannel ch) throws Exception {
                         ch.pipeline()
-                        .addLast(new MqttDecoder(MAXIMUM_MESSAGE_SIZE_DEFAULT))
+                        .addLast(new MqttDecoder(maxMessageSize))
                         .addLast(new MqttEncoder())
                         .addLast(new MqttHandler());
                     }
@@ -349,6 +375,10 @@ public final class MqttService // extends ChannelInboundHandlerAdapter {
         log.info("Started MQTT Service, listening on port " + port);
 
         return this;
+    }
+
+    public int port() {
+        return port;
     }
 
     public void shutdown() throws Exception {
